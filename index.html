@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HarmonyHub · GCSE Music Theory (Eduqas)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Decorative floating blobs -->
+  <div class="bg-blobs" aria-hidden="true">
+    <span class="blob blob-1"></span>
+    <span class="blob blob-2"></span>
+    <span class="blob blob-3"></span>
+  </div>
+
+  <!-- ===================== AUTH SCREEN ===================== -->
+  <section id="auth-screen" class="screen auth-screen">
+    <div class="auth-card glass">
+      <div class="brand">
+        <div class="brand-logo">🎵</div>
+        <h1>HarmonyHub</h1>
+        <p class="brand-sub">GCSE Music Theory · Eduqas</p>
+      </div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">Log in</button>
+        <button class="auth-tab" data-tab="signup">Sign up</button>
+      </div>
+
+      <!-- Login form -->
+      <form id="login-form" class="auth-form">
+        <label>Username
+          <input type="text" id="login-username" autocomplete="username" placeholder="e.g. mozart_22" required />
+        </label>
+        <label>Password
+          <input type="password" id="login-password" autocomplete="current-password" placeholder="Your password" required />
+        </label>
+        <p class="auth-error" id="login-error"></p>
+        <button type="submit" class="btn btn-primary btn-block">Log in</button>
+      </form>
+
+      <!-- Signup form -->
+      <form id="signup-form" class="auth-form hidden">
+        <label>Username
+          <input type="text" id="signup-username" autocomplete="username" placeholder="Pick a username" required />
+        </label>
+        <label>Password
+          <input type="password" id="signup-password" autocomplete="new-password" placeholder="Create a password (min 4 chars)" required />
+        </label>
+        <label>Confirm password
+          <input type="password" id="signup-confirm" autocomplete="new-password" placeholder="Repeat your password" required />
+        </label>
+        <p class="auth-error" id="signup-error"></p>
+        <button type="submit" class="btn btn-primary btn-block">Create account</button>
+      </form>
+
+      <p class="auth-foot">Your account &amp; progress are stored privately in this browser.</p>
+    </div>
+  </section>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div id="app-shell" class="hidden">
+    <header class="topbar glass">
+      <div class="topbar-left" id="topbar-home">
+        <div class="brand-logo small">🎵</div>
+        <span class="topbar-title">HarmonyHub</span>
+      </div>
+      <div class="topbar-right">
+        <span class="user-chip" id="user-chip"></span>
+        <button class="btn btn-ghost btn-pill" id="logout-btn">Log out</button>
+      </div>
+    </header>
+
+    <main id="view" class="view"></main>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="questions.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
