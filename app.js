@@ -1,36 +1,15 @@
 /* ============================================================
-   HarmonyHub — app logic: auth, progress tracking, quiz engine
-   Storage is browser localStorage (per-device, private).
+   HarmonyHub — app logic: auth, progress, Learn (flashcards),
+   and the quiz engine (with randomised option order).
+   Data is handled by HHApi (server when available, else local).
    ============================================================ */
 
-const LS_USERS = "hh_users";       // { username: { password, progress } }
-const LS_SESSION = "hh_session";   // current username
-
-/* ---------- tiny helpers ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const view = $("#view");
 
-function loadUsers() { try { return JSON.parse(localStorage.getItem(LS_USERS)) || {}; } catch { return {}; } }
-function saveUsers(u) { localStorage.setItem(LS_USERS, JSON.stringify(u)); }
-function currentUser() { return localStorage.getItem(LS_SESSION); }
-
-/* very light hash so passwords aren't stored in plain text */
-function hash(str) {
-  let h = 5381;
-  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
-  return "h" + (h >>> 0).toString(16);
-}
-
-function getProgress() {
-  const users = loadUsers();
-  const u = users[currentUser()];
-  return (u && u.progress) || {};
-}
-function setProgress(p) {
-  const users = loadUsers();
-  if (users[currentUser()]) { users[currentUser()].progress = p; saveUsers(users); }
-}
+// In-memory session: { username, progress }
+let SESSION = null;
 
 function toast(msg) {
   const t = $("#toast");
@@ -38,6 +17,58 @@ function toast(msg) {
   t.classList.add("show");
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/* ============================================================
+   PROGRESS  (shape: { [topicId]: { levels:{[id]:pct}, exam:pct } })
+   ============================================================ */
+function getProgress() { return (SESSION && SESSION.progress) || {}; }
+
+function topicProgress(topicId) {
+  const p = getProgress();
+  return p[topicId] || { levels: {}, exam: 0, learned: false };
+}
+
+function recordScore(topicId, itemId, pct, isExam) {
+  const p = getProgress();
+  if (!p[topicId]) p[topicId] = { levels: {}, exam: 0, learned: false };
+  if (isExam) p[topicId].exam = Math.max(p[topicId].exam || 0, pct);
+  else p[topicId].levels[itemId] = Math.max(p[topicId].levels[itemId] || 0, pct);
+  HHApi.saveProgress(p);
+}
+
+function markLearned(topicId) {
+  const p = getProgress();
+  if (!p[topicId]) p[topicId] = { levels: {}, exam: 0, learned: false };
+  if (!p[topicId].learned) { p[topicId].learned = true; HHApi.saveProgress(p); }
+}
+
+function topicCompletion(topic) {
+  const tp = topicProgress(topic.id);
+  const total = topic.levels.length + 1; // levels + exam
+  let done = 0;
+  topic.levels.forEach(l => { if ((tp.levels[l.id] || 0) >= PASS_MARK * 100) done++; });
+  if ((tp.exam || 0) >= PASS_MARK * 100) done++;
+  return { done, total, pct: Math.round((done / total) * 100) };
+}
+
+function overallStats() {
+  let levelsPassed = 0, levelsTotal = 0, examsPassed = 0;
+  TOPICS.forEach(t => {
+    const tp = topicProgress(t.id);
+    t.levels.forEach(l => { levelsTotal++; if ((tp.levels[l.id] || 0) >= PASS_MARK * 100) levelsPassed++; });
+    if ((tp.exam || 0) >= PASS_MARK * 100) examsPassed++;
+  });
+  return { levelsPassed, levelsTotal, examsPassed, examsTotal: TOPICS.length };
 }
 
 /* ============================================================
@@ -56,38 +87,37 @@ function initAuth() {
     });
   });
 
-  $("#login-form").addEventListener("submit", e => {
+  $("#login-form").addEventListener("submit", async e => {
     e.preventDefault();
-    const username = $("#login-username").value.trim();
-    const pw = $("#login-password").value;
-    const users = loadUsers();
     const err = $("#login-error");
-    if (!users[username]) { err.textContent = "No account with that username."; return; }
-    if (users[username].password !== hash(pw)) { err.textContent = "Incorrect password."; return; }
-    localStorage.setItem(LS_SESSION, username);
-    enterApp();
+    const btn = $("#login-form button[type=submit]");
+    err.textContent = ""; btn.disabled = true;
+    try {
+      SESSION = await HHApi.login($("#login-username").value, $("#login-password").value);
+      enterApp();
+    } catch (ex) { err.textContent = ex.message; }
+    finally { btn.disabled = false; }
   });
 
-  $("#signup-form").addEventListener("submit", e => {
+  $("#signup-form").addEventListener("submit", async e => {
     e.preventDefault();
-    const username = $("#signup-username").value.trim();
-    const pw = $("#signup-password").value;
-    const confirm = $("#signup-confirm").value;
     const err = $("#signup-error");
-    if (username.length < 3) { err.textContent = "Username must be at least 3 characters."; return; }
-    if (pw.length < 4) { err.textContent = "Password must be at least 4 characters."; return; }
+    const btn = $("#signup-form button[type=submit]");
+    err.textContent = "";
+    const pw = $("#signup-password").value, confirm = $("#signup-confirm").value;
     if (pw !== confirm) { err.textContent = "Passwords do not match."; return; }
-    const users = loadUsers();
-    if (users[username]) { err.textContent = "That username is already taken."; return; }
-    users[username] = { password: hash(pw), progress: {} };
-    saveUsers(users);
-    localStorage.setItem(LS_SESSION, username);
-    toast("Welcome to HarmonyHub, " + username + "! 🎵");
-    enterApp();
+    btn.disabled = true;
+    try {
+      SESSION = await HHApi.signup($("#signup-username").value, pw);
+      toast("Welcome to HarmonyHub, " + SESSION.username + "! 🎵");
+      enterApp();
+    } catch (ex) { err.textContent = ex.message; }
+    finally { btn.disabled = false; }
   });
 
   $("#logout-btn").addEventListener("click", () => {
-    localStorage.removeItem(LS_SESSION);
+    HHApi.logout();
+    SESSION = null;
     $("#app-shell").classList.add("hidden");
     $("#auth-screen").classList.remove("hidden");
   });
@@ -95,50 +125,12 @@ function initAuth() {
   $("#topbar-home").addEventListener("click", renderDashboard);
 }
 
-function enterApp() {
+async function enterApp() {
   $("#auth-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
-  $("#user-chip").textContent = "👋 " + currentUser();
+  $("#user-chip").textContent = "👋 " + SESSION.username;
+  $("#sync-chip").textContent = await HHApi.modeLabel();
   renderDashboard();
-}
-
-/* ============================================================
-   PROGRESS HELPERS
-   ============================================================ */
-// progress shape: { [topicId]: { levels: { [levelId]: pct }, exam: pct } }
-function topicProgress(topicId) {
-  const p = getProgress();
-  return p[topicId] || { levels: {}, exam: 0 };
-}
-function recordScore(topicId, itemId, pct, isExam) {
-  const p = getProgress();
-  if (!p[topicId]) p[topicId] = { levels: {}, exam: 0 };
-  if (isExam) {
-    p[topicId].exam = Math.max(p[topicId].exam || 0, pct);
-  } else {
-    p[topicId].levels[itemId] = Math.max(p[topicId].levels[itemId] || 0, pct);
-  }
-  setProgress(p);
-}
-
-function topicCompletion(topic) {
-  // fraction of (levels + exam) passed
-  const tp = topicProgress(topic.id);
-  const total = topic.levels.length + 1;
-  let done = 0;
-  topic.levels.forEach(l => { if ((tp.levels[l.id] || 0) >= PASS_MARK * 100) done++; });
-  if ((tp.exam || 0) >= PASS_MARK * 100) done++;
-  return { done, total, pct: Math.round((done / total) * 100) };
-}
-
-function overallStats() {
-  let levelsPassed = 0, levelsTotal = 0, examsPassed = 0;
-  TOPICS.forEach(t => {
-    const tp = topicProgress(t.id);
-    t.levels.forEach(l => { levelsTotal++; if ((tp.levels[l.id] || 0) >= PASS_MARK * 100) levelsPassed++; });
-    if ((tp.exam || 0) >= PASS_MARK * 100) examsPassed++;
-  });
-  return { levelsPassed, levelsTotal, examsPassed, examsTotal: TOPICS.length };
 }
 
 /* ============================================================
@@ -150,8 +142,8 @@ function renderDashboard() {
 
   view.innerHTML = `
     <div class="page-head">
-      <h2>Hello, ${currentUser()} 👋</h2>
-      <p>Pick a topic below to revise GCSE Music Theory (Eduqas). Score ${PASS_MARK * 100}%+ on a level to mark it complete.</p>
+      <h2>Hello, ${SESSION.username} 👋</h2>
+      <p>Pick a topic to revise GCSE Music Theory (Eduqas). <b>Learn</b> the concepts first, then take the levels — score ${PASS_MARK * 100}%+ to complete each one and unlock the exam.</p>
     </div>
     <div class="stats-row">
       <div class="stat-card"><div class="num">${s.levelsPassed}/${s.levelsTotal}</div><div class="lbl">Levels completed</div></div>
@@ -161,6 +153,8 @@ function renderDashboard() {
     <div class="topic-grid">
       ${TOPICS.map(t => {
         const c = topicCompletion(t);
+        const tp = topicProgress(t.id);
+        const nq = t.levels.reduce((n, l) => n + l.questions.length, 0) + t.exam.questions.length;
         return `
         <div class="topic-card" data-topic="${t.id}">
           <div class="topic-icon" style="background:${t.color}">${t.icon}</div>
@@ -168,8 +162,8 @@ function renderDashboard() {
           <p class="desc">${t.desc}</p>
           <div class="progress-track"><div class="progress-fill" style="width:${c.pct}%"></div></div>
           <div class="topic-meta">
-            <span>${t.levels.length} levels + exam</span>
-            <span class="${c.pct === 100 ? "badge-done" : ""}">${c.pct === 100 ? "✓ Mastered" : c.pct + "%"}</span>
+            <span>${t.flashcards.length} cards · ${nq} questions</span>
+            <span class="${c.pct === 100 ? "badge-done" : ""}">${c.pct === 100 ? "✓ Mastered" : (tp.learned ? c.pct + "%" : "New")}</span>
           </div>
         </div>`;
       }).join("")}
@@ -186,8 +180,6 @@ function renderDashboard() {
 function renderTopic(topicId) {
   const topic = TOPICS.find(t => t.id === topicId);
   const tp = topicProgress(topicId);
-
-  // exam unlocks once all levels are passed
   const allLevelsPassed = topic.levels.every(l => (tp.levels[l.id] || 0) >= PASS_MARK * 100);
 
   const levelRows = topic.levels.map((l, i) => {
@@ -210,48 +202,121 @@ function renderTopic(topicId) {
       <h2><span style="margin-right:8px">${topic.icon}</span>${topic.title}</h2>
       <p>${topic.desc}</p>
     </div>
+
+    <div class="section-label">Learn first</div>
+    <div class="level-list">
+      <div class="level-item learn" data-learn="${topic.id}">
+        <div class="level-num">📖</div>
+        <div class="level-info">
+          <h4>Flashcards: Learn the concepts</h4>
+          <p>${topic.flashcards.length} flip-cards covering everything you need before the questions.</p>
+        </div>
+        <div class="level-score ${tp.learned ? "score-pass" : "score-none"}">${tp.learned ? "Reviewed ✓" : "Start here"}</div>
+      </div>
+    </div>
+
     <div class="section-label">Lessons</div>
     <div class="level-list">${levelRows}</div>
+
     <div class="section-label">End-of-topic exam</div>
     <div class="level-list">
       <div class="level-item exam ${allLevelsPassed ? "" : "locked"}" data-exam="${topic.id}">
         <div class="level-num">★</div>
         <div class="level-info">
           <h4>${topic.title} Exam</h4>
-          <p>${allLevelsPassed ? topic.exam.questions.length + " questions · prove your mastery" : "🔒 Complete all lessons above to unlock"}</p>
+          <p>${allLevelsPassed ? topic.exam.questions.length + " questions · prove your mastery" : "🔒 Pass all lessons above to unlock"}</p>
         </div>
         <div class="level-score ${examPassed ? "score-pass" : "score-none"}">${examScore ? examScore + "%" : "—"}${examPassed ? " ✓" : ""}</div>
       </div>
     </div>`;
 
   $("#back-dash").addEventListener("click", renderDashboard);
+  $(".level-item[data-learn]").addEventListener("click", () => startLearn(topic));
   $$(".level-item[data-level]").forEach(el =>
     el.addEventListener("click", () => {
       const lvl = topic.levels.find(l => l.id === el.dataset.level);
       startQuiz(topic, lvl, false);
     }));
-  const examEl = $(".level-item[data-exam]");
-  examEl.addEventListener("click", () => {
-    if (!allLevelsPassed) { toast("Complete all lessons first to unlock the exam 🔒"); return; }
+  $(".level-item[data-exam]").addEventListener("click", () => {
+    if (!allLevelsPassed) { toast("Pass all lessons first to unlock the exam 🔒"); return; }
     startQuiz(topic, { id: "exam", title: topic.title + " Exam", questions: topic.exam.questions }, true);
   });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 /* ============================================================
-   QUIZ ENGINE
+   LEARN — flashcards
    ============================================================ */
-function shuffle(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+function startLearn(topic) {
+  const cards = topic.flashcards;
+  let idx = 0;
+
+  function render() {
+    const card = cards[idx];
+    const pct = Math.round(((idx + 1) / cards.length) * 100);
+    view.innerHTML = `
+      <div class="quiz-wrap">
+        <button class="btn btn-ghost btn-pill back-btn" id="learn-quit">← Back to ${topic.title}</button>
+        <div class="quiz-top">
+          <span class="quiz-counter">${topic.icon} Learn: ${topic.title}</span>
+          <span class="quiz-counter">Card ${idx + 1} / ${cards.length}</span>
+        </div>
+        <div class="quiz-progress"><div style="width:${pct}%"></div></div>
+
+        <div class="flashcard" id="flashcard" tabindex="0" aria-label="Flashcard, click to flip">
+          <div class="flashcard-inner">
+            <div class="flashcard-face flashcard-front">
+              <span class="flashcard-tag">Concept</span>
+              <p>${card.front}</p>
+              <span class="flashcard-hint">Tap to reveal 👆</span>
+            </div>
+            <div class="flashcard-face flashcard-back">
+              <span class="flashcard-tag">Answer</span>
+              <p>${card.back}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="learn-actions">
+          <button class="btn btn-soft btn-pill" id="learn-prev" ${idx === 0 ? "disabled" : ""}>← Previous</button>
+          <button class="btn btn-soft btn-pill" id="learn-flip">↻ Flip</button>
+          ${idx + 1 < cards.length
+            ? `<button class="btn btn-primary btn-pill" id="learn-next">Next →</button>`
+            : `<button class="btn btn-primary btn-pill" id="learn-done">I'm ready — to the lessons →</button>`}
+        </div>
+      </div>`;
+
+    const fc = $("#flashcard");
+    const flip = () => fc.classList.toggle("flipped");
+    fc.addEventListener("click", flip);
+    $("#learn-flip").addEventListener("click", e => { e.stopPropagation(); flip(); });
+    $("#learn-quit").addEventListener("click", () => renderTopic(topic.id));
+    if ($("#learn-prev")) $("#learn-prev").addEventListener("click", () => { if (idx > 0) { idx--; render(); } });
+    if ($("#learn-next")) $("#learn-next").addEventListener("click", () => { idx++; render(); });
+    if ($("#learn-done")) $("#learn-done").addEventListener("click", () => {
+      markLearned(topic.id);
+      toast("Nice — concepts reviewed! 📖");
+      renderTopic(topic.id);
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
-  return a;
+  render();
 }
 
+/* ============================================================
+   QUIZ ENGINE  (options randomised per question)
+   ============================================================ */
 function startQuiz(topic, item, isExam) {
-  const questions = shuffle(item.questions);
+  // shuffle question order, and pre-shuffle each question's option order
+  const questions = shuffle(item.questions).map(q => {
+    const order = shuffle(q.options.map((_, i) => i));        // randomised indices
+    return {
+      q: q.q,
+      explain: q.explain,
+      options: order.map(i => q.options[i]),                  // reordered option text
+      answer: order.indexOf(q.answer),                        // new index of the correct one
+    };
+  });
   let idx = 0, correct = 0, answered = false;
 
   function renderQuestion() {
@@ -308,7 +373,6 @@ function startQuiz(topic, item, isExam) {
       if (idx < questions.length) renderQuestion();
       else finishQuiz();
     });
-
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -320,7 +384,7 @@ function startQuiz(topic, item, isExam) {
     let emoji, heading, msg;
     if (pct === 100) { emoji = "🏆"; heading = "Perfect score!"; msg = "Flawless — you've nailed this one."; }
     else if (passed) { emoji = "🎉"; heading = "You passed!"; msg = isExam ? "Topic exam cleared. On to the next!" : "Lesson complete — keep the streak going."; }
-    else { emoji = "💪"; heading = "Keep practising"; msg = `You need ${PASS_MARK * 100}% to pass. Review the explanations and try again.`; }
+    else { emoji = "💪"; heading = "Keep practising"; msg = `You need ${PASS_MARK * 100}% to pass. Review the flashcards and try again.`; }
 
     view.innerHTML = `
       <div class="result-card glass">
@@ -333,7 +397,6 @@ function startQuiz(topic, item, isExam) {
           <button class="btn btn-primary btn-pill" id="to-topic">Back to ${topic.title}</button>
         </div>
       </div>`;
-
     $("#retry").addEventListener("click", () => startQuiz(topic, item, isExam));
     $("#to-topic").addEventListener("click", () => renderTopic(topic.id));
     if (passed) toast((isExam ? "Exam passed" : "Level complete") + ": " + pct + "% 🎵");
@@ -346,7 +409,8 @@ function startQuiz(topic, item, isExam) {
 /* ============================================================
    BOOT
    ============================================================ */
-initAuth();
-if (currentUser() && loadUsers()[currentUser()]) {
-  enterApp();
-}
+(async function boot() {
+  initAuth();
+  const restored = await HHApi.restore();
+  if (restored) { SESSION = restored; enterApp(); }
+})();

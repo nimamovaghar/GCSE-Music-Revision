@@ -125,6 +125,27 @@ html, body {
 .topbar-title { font-weight: 800; font-size: 18px; color: var(--blue-900); }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .user-chip { font-weight: 600; font-size: 14px; color: var(--blue-700); background: var(--blue-50); padding: 8px 16px; border-radius: var(--radius-pill); }
+.sync-chip { font-weight: 600; font-size: 12px; color: var(--ink-soft); background: rgba(255,255,255,.55); padding: 7px 13px; border-radius: var(--radius-pill); }
+@media (max-width: 640px) { .sync-chip { display: none; } }
+
+/* ===================== LEARN / FLASHCARDS ===================== */
+.level-item.learn .level-num { background: linear-gradient(135deg,#16b364,#0b8f86); }
+.flashcard { perspective: 1400px; width: 100%; height: 320px; cursor: pointer; outline: none; margin-bottom: 8px; }
+.flashcard-inner { position: relative; width: 100%; height: 100%; transition: transform .6s cubic-bezier(.2,.8,.3,1.05); transform-style: preserve-3d; }
+.flashcard.flipped .flashcard-inner { transform: rotateY(180deg); }
+.flashcard-face {
+  position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  border-radius: 26px; padding: 34px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; box-shadow: var(--shadow-lg); border: 1px solid rgba(255,255,255,.8);
+}
+.flashcard-front { background: rgba(255,255,255,.8); backdrop-filter: blur(16px); }
+.flashcard-back { background: linear-gradient(135deg, var(--blue-500), var(--blue-700)); color: #fff; transform: rotateY(180deg); }
+.flashcard-face p { font-size: 20px; font-weight: 600; line-height: 1.5; margin: 10px 0; }
+.flashcard-front p { color: var(--blue-900); }
+.flashcard-tag { text-transform: uppercase; letter-spacing: 1.5px; font-size: 11px; font-weight: 800; opacity: .7; }
+.flashcard-front .flashcard-tag { color: var(--blue-500); }
+.flashcard-hint { font-size: 12px; color: var(--ink-soft); font-weight: 500; margin-top: 8px; }
+.learn-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 22px; }
 
 .view { position: relative; z-index: 1; max-width: 1080px; margin: 0 auto; padding: 28px 24px 80px; }
 
