@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-HarmonyHub backend — pure Python standard library (no pip installs needed).
+HarmonyHub backend.
 
 Serves the static site AND a small JSON API that stores user accounts and
-revision progress in a SQLite database, so logins work across devices.
+revision progress, so logins work across devices.
 
-Run:   python3 server.py            (defaults to port 8000)
+Storage:
+  * If a DATABASE_URL environment variable is set (e.g. on Render), it uses
+    PostgreSQL — durable across restarts/redeploys. Requires `psycopg`
+    (see requirements.txt).
+  * Otherwise it falls back to a local SQLite file (zero dependencies),
+    which is ideal for local development.
+
+Run:   python3 server.py            (defaults to port 8000, SQLite)
        PORT=4173 python3 server.py  (custom port)
 
 Endpoints (all JSON):
@@ -30,6 +37,13 @@ DB_PATH = os.path.join(ROOT, "harmonyhub.db")
 PORT = int(os.environ.get("PORT", "8000"))
 PBKDF2_ROUNDS = 200_000
 
+# ---- choose database backend ----
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_PG = bool(DATABASE_URL)
+if USE_PG and DATABASE_URL.startswith("postgres://"):
+    # psycopg/SQLAlchemy expect the "postgresql://" scheme
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+
 _db_lock = threading.Lock()
 
 
@@ -37,14 +51,24 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def Q(sql):
+    """Use ? placeholders everywhere; translate to %s for PostgreSQL."""
+    return sql.replace("?", "%s") if USE_PG else sql
+
+
 def get_db():
+    """Return a DB connection whose rows support mapping access (row['col'])."""
+    if USE_PG:
+        import psycopg
+        from psycopg.rows import dict_row
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-    with get_db() as conn:
+    with _db_lock, get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 username  TEXT PRIMARY KEY,
@@ -102,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         token = auth[7:].strip()
         with get_db() as conn:
             row = conn.execute(
-                "SELECT username FROM sessions WHERE token = ?", (token,)
+                Q("SELECT username FROM sessions WHERE token = ?"), (token,)
             ).fetchone()
         return row["username"] if row else None
 
@@ -149,16 +173,16 @@ class Handler(BaseHTTPRequestHandler):
         token = secrets.token_urlsafe(32)
         with _db_lock, get_db() as conn:
             exists = conn.execute(
-                "SELECT 1 FROM users WHERE username = ?", (username,)
+                Q("SELECT 1 FROM users WHERE username = ?"), (username,)
             ).fetchone()
             if exists:
                 return self._send_json(409, {"error": "That username is already taken."})
             conn.execute(
-                "INSERT INTO users (username, salt, pw_hash, progress, created) VALUES (?,?,?,?,?)",
+                Q("INSERT INTO users (username, salt, pw_hash, progress, created) VALUES (?,?,?,?,?)"),
                 (username, salt, hash_pw(password, salt), "{}", now_iso()),
             )
             conn.execute(
-                "INSERT INTO sessions (token, username, created) VALUES (?,?,?)",
+                Q("INSERT INTO sessions (token, username, created) VALUES (?,?,?)"),
                 (token, username, now_iso()),
             )
         return self._send_json(200, {"token": token, "username": username, "progress": {}})
@@ -171,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
         password = data.get("password") or ""
         with get_db() as conn:
             row = conn.execute(
-                "SELECT * FROM users WHERE username = ?", (username,)
+                Q("SELECT * FROM users WHERE username = ?"), (username,)
             ).fetchone()
         if not row:
             return self._send_json(401, {"error": "No account with that username."})
@@ -181,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
         token = secrets.token_urlsafe(32)
         with _db_lock, get_db() as conn:
             conn.execute(
-                "INSERT INTO sessions (token, username, created) VALUES (?,?,?)",
+                Q("INSERT INTO sessions (token, username, created) VALUES (?,?,?)"),
                 (token, username, now_iso()),
             )
         progress = json.loads(row["progress"] or "{}")
@@ -193,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(401, {"error": "Not authenticated"})
         with get_db() as conn:
             row = conn.execute(
-                "SELECT progress FROM users WHERE username = ?", (username,)
+                Q("SELECT progress FROM users WHERE username = ?"), (username,)
             ).fetchone()
         progress = json.loads(row["progress"] or "{}") if row else {}
         return self._send_json(200, {"username": username, "progress": progress})
@@ -207,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": "Missing progress"})
         with _db_lock, get_db() as conn:
             conn.execute(
-                "UPDATE users SET progress = ? WHERE username = ?",
+                Q("UPDATE users SET progress = ? WHERE username = ?"),
                 (json.dumps(data["progress"]), username),
             )
         return self._send_json(200, {"ok": True})
